@@ -106,6 +106,15 @@ app.use('*', async (c, next) => {
 		if (publicToken !== userPublicToken) {
 			throw new BizError(t('publicTokenFail'), 401);
 		}
+
+		const adminUser = await userService.selectByEmailIncludeDel(c, c.env.admin);
+
+		if (!adminUser || adminUser.isDel) {
+			throw new BizError(t('notExistUser'), 401);
+		}
+
+		const authUser = await userService.loginUserInfo(c, adminUser.userId);
+		c.set('user', authUser);
 		return await next();
 	}
 

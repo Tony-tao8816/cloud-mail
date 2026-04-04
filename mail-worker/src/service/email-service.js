@@ -21,6 +21,7 @@ import domainUtils from '../utils/domain-uitls';
 import account from "../entity/account";
 import { att } from '../entity/att';
 import telegramService from './telegram-service';
+import verifyUtils from '../utils/verify-utils';
 
 const emailService = {
 
@@ -161,7 +162,20 @@ const emailService = {
 			content, //邮件内容
 			subject, //邮件标题
 			attachments //附件
-		} = params;
+		} = this.normalizeSendParams(params);
+
+		accountId = Number(accountId);
+		emailId = Number(emailId);
+
+		if (receiveEmail.length === 0) {
+			throw new BizError(t('emptyRecipient'));
+		}
+
+		const invalidEmail = receiveEmail.find(email => !verifyUtils.isEmail(email));
+
+		if (invalidEmail) {
+			throw new BizError(t('notEmail'));
+		}
 
 		const { resendTokens, r2Domain, send, domainList } = await settingService.query(c);
 
@@ -367,6 +381,60 @@ const emailService = {
 		return [ emailResult ];
 	},
 
+	normalizeSendParams(params = {}) {
+		const content = typeof params.content === 'string' ? params.content : '';
+		const receiveEmail = this.normalizeReceiveEmail(params.receiveEmail);
+		const attachments = this.normalizeAttachments(params.attachments);
+		const text = typeof params.text === 'string' && params.text.trim()
+			? params.text
+			: emailUtils.htmlToText(content);
+
+		return {
+			...params,
+			name: typeof params.name === 'string' ? params.name.trim() : '',
+			subject: typeof params.subject === 'string' ? params.subject : '',
+			content,
+			text,
+			receiveEmail,
+			attachments
+		};
+	},
+
+	normalizeReceiveEmail(receiveEmail) {
+		if (Array.isArray(receiveEmail)) {
+			return [...new Set(receiveEmail
+				.map(item => typeof item === 'string' ? item.trim() : '')
+				.filter(Boolean))];
+		}
+
+		if (typeof receiveEmail === 'string') {
+			return [...new Set(receiveEmail
+				.split(/[,，;；\n\r]+/)
+				.map(item => item.trim())
+				.filter(Boolean))];
+		}
+
+		return [];
+	},
+
+	normalizeAttachments(attachments) {
+		if (!Array.isArray(attachments)) {
+			return [];
+		}
+
+		return attachments
+			.filter(item => item)
+			.map(item => {
+				const mimeType = item.type || item.contentType || item.mimeType || 'application/octet-stream';
+				return {
+					...item,
+					type: mimeType,
+					contentType: item.contentType || mimeType,
+					mimeType: item.mimeType || mimeType
+				};
+			});
+	},
+
 	//处理站内邮件发送
 	async HandleOnSiteEmail(c, receiveEmail, sendEmailData, attList) {
 
@@ -560,10 +628,8 @@ const emailService = {
 
 	async physicsDelete(c, params) {
 		let { emailIds } = params;
-		emailIds = emailIds.split(',').map(Number);
-		await attService.removeByEmailIds(c, emailIds);
-		await starService.removeByEmailIds(c, emailIds);
-		await orm(c).delete(email).where(inArray(email.emailId, emailIds)).run();
+		emailIds = this.normalizeEmailIds(emailIds);
+		return await this.deleteByIds(c, emailIds);
 	},
 
 	async physicsDeleteUserIds(c, userIds) {
@@ -797,12 +863,80 @@ const emailService = {
 		const emailIds = emailIdsRow.map(row => row.emailId);
 
 		if (emailIds.length === 0){
-			return;
+			return [];
 		}
 
-		await attService.removeByEmailIds(c, emailIds);
+		return await this.deleteByIds(c, emailIds);
+	},
 
-		await orm(c).delete(email).where(conditions.length > 1 ? and(...conditions) : conditions[0]).run();
+	async deleteByIds(c, emailIds) {
+		emailIds = this.normalizeEmailIds(emailIds);
+
+		if (emailIds.length === 0) {
+			return [];
+		}
+
+		const emailRows = await orm(c)
+			.select({ emailId: email.emailId })
+			.from(email)
+			.where(inArray(email.emailId, emailIds))
+			.all();
+
+		const matchedIds = emailRows.map(row => row.emailId);
+
+		if (matchedIds.length === 0) {
+			return [];
+		}
+
+		await attService.removeByEmailIds(c, matchedIds);
+		await starService.removeByEmailIds(c, matchedIds);
+		await orm(c).delete(email).where(inArray(email.emailId, matchedIds)).run();
+
+		return matchedIds;
+	},
+
+	async deleteByConditions(c, conditions) {
+		if (!conditions || conditions.length === 0) {
+			return [];
+		}
+
+		const whereCondition = conditions.length > 1 ? and(...conditions) : conditions[0];
+
+		const emailRows = await orm(c)
+			.select({ emailId: email.emailId })
+			.from(email)
+			.where(whereCondition)
+			.all();
+
+		const emailIds = emailRows.map(row => row.emailId);
+
+		if (emailIds.length === 0) {
+			return [];
+		}
+
+		return await this.deleteByIds(c, emailIds);
+	},
+
+	normalizeEmailIds(emailIds) {
+		if (Array.isArray(emailIds)) {
+			return [...new Set(emailIds
+				.map(item => Number(item))
+				.filter(item => Number.isInteger(item) && item > 0))];
+		}
+
+		if (typeof emailIds === 'string') {
+			return [...new Set(emailIds
+				.split(/[,，]/)
+				.map(item => Number(item))
+				.filter(item => Number.isInteger(item) && item > 0))];
+		}
+
+		if (emailIds || emailIds === 0) {
+			const emailId = Number(emailIds);
+			return Number.isInteger(emailId) && emailId > 0 ? [emailId] : [];
+		}
+
+		return [];
 	},
 
 	async physicsDeleteByAccountId(c, accountId) {

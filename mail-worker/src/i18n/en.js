@@ -3,6 +3,8 @@ const en = {
 	addAccountDisabled: 'Add Email Address feature is disabled',
 	regDisabled: 'Sign up is disabled',
 	emptyEmail: 'Email cannot be empty',
+	emptyRecipient: 'Recipient cannot be empty',
+	emptyDeleteCondition: 'Delete condition cannot be empty',
 	notEmail: 'Invalid email',
 	notExistDomain: 'Email domain does not exist',
 	isDelAccount: 'This Email has been deleted',

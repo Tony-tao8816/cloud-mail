@@ -142,13 +142,14 @@ const attService = {
 		const attDataList = [];
 
 		for (let att of attList) {
+			const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
 			att.buff = fileUtils.base64ToUint8Array(att.content);
 			att.key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(att.buff) + fileUtils.getExtFileName(att.filename);
 			const attData = { userId, accountId, emailId };
 			attData.key = att.key;
 			attData.size = att.buff.length;
 			attData.filename = att.filename;
-			attData.mimeType = att.type;
+			attData.mimeType = mimeType;
 			attData.type = attConst.type.ATT;
 			attDataList.push(attData);
 		}
@@ -156,8 +157,9 @@ const attService = {
 		await orm(c).insert(att).values(attDataList).run();
 
 		for (let att of attList) {
+			const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
 			await r2Service.putObj(c, att.key, att.buff, {
-				contentType: att.type,
+				contentType: mimeType,
 				contentDisposition: `attachment;filename=${att.filename}`
 			});
 		}

@@ -1,7 +1,7 @@
 import BizError from '../error/biz-error';
 import orm from '../entity/orm';
 import { v4 as uuidv4 } from 'uuid';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import saltHashUtils from '../utils/crypto-utils';
 import cryptoUtils from '../utils/crypto-utils';
 import emailUtils from '../utils/email-utils';
@@ -14,12 +14,14 @@ import { isDel, roleConst } from '../const/entity-const';
 import email from '../entity/email';
 import userService from './user-service';
 import KvConst from '../const/kv-const';
+import accountService from './account-service';
+import emailService from './email-service';
 
 const publicService = {
 
 	async emailList(c, params) {
 
-		let { toEmail, content, subject, sendName, sendEmail, timeSort, num, size, type , isDel } = params
+		let { timeSort, num, size } = params;
 
 		const query = orm(c).select({
 				emailId: email.emailId,
@@ -48,38 +50,10 @@ const publicService = {
 
 		num = (num - 1) * size;
 
-		let conditions = []
-
-		if (toEmail) {
-			conditions.push(sql`${email.toEmail} COLLATE NOCASE LIKE ${toEmail}`)
-		}
-
-		if (sendEmail) {
-			conditions.push(sql`${email.sendEmail} COLLATE NOCASE LIKE ${sendEmail}`)
-		}
-
-		if (sendName) {
-			conditions.push(sql`${email.name} COLLATE NOCASE LIKE ${sendName}`)
-		}
-
-		if (subject) {
-			conditions.push(sql`${email.subject} COLLATE NOCASE LIKE ${subject}`)
-		}
-
-		if (content) {
-			conditions.push(sql`${email.content} COLLATE NOCASE LIKE ${content}`)
-		}
-
-		if (type || type === 0) {
-			conditions.push(eq(email.type, type))
-		}
-
-		if (isDel || isDel === 0) {
-			conditions.push(eq(email.isDel, isDel))
-		}
+		let conditions = this.buildEmailConditions(params);
 
 		if (conditions.length === 1) {
-			query.where(...conditions)
+			query.where(conditions[0])
 		} else if (conditions.length > 1) {
 			query.where(and(...conditions))
 		}
@@ -92,6 +66,33 @@ const publicService = {
 
 		return query.limit(size).offset(num);
 
+	},
+
+	async deleteEmail(c, params) {
+		const emailIds = this.normalizeEmailIds(params);
+
+		if (emailIds.length > 0) {
+			const deletedIds = await emailService.deleteByIds(c, emailIds);
+			return {
+				mode: deletedIds.length > 1 ? 'batch' : 'single',
+				deletedCount: deletedIds.length,
+				emailIds: deletedIds
+			};
+		}
+
+		const conditions = this.buildEmailConditions(params, true);
+
+		if (conditions.length === 0) {
+			throw new BizError(t('emptyDeleteCondition'));
+		}
+
+		const deletedIds = await emailService.deleteByConditions(c, conditions);
+
+		return {
+			mode: 'condition',
+			deletedCount: deletedIds.length,
+			emailIds: deletedIds
+		};
 	},
 
 	async addUser(c, params) {
@@ -160,6 +161,67 @@ const publicService = {
 
 	},
 
+	async sendEmail(c, params) {
+
+		const adminUser = await userService.selectByEmailIncludeDel(c, c.env.admin);
+
+		if (!adminUser || adminUser.isDel === isDel.DELETE) {
+			throw new BizError(t('notExistUser'));
+		}
+
+		let {
+			sendEmail,
+			sendName,
+			receiveEmail,
+			subject,
+			content,
+			text,
+			attachments,
+			sendType,
+			emailId
+		} = params;
+
+		receiveEmail = this.normalizeReceiveEmail(receiveEmail);
+
+		if (receiveEmail.length === 0) {
+			throw new BizError(t('emptyRecipient'));
+		}
+
+		const invalidEmail = receiveEmail.find(email => !verifyUtils.isEmail(email));
+
+		if (invalidEmail) {
+			throw new BizError(t('notEmail'));
+		}
+
+		sendEmail = typeof sendEmail === 'string' && sendEmail.trim() ? sendEmail.trim() : adminUser.email;
+
+		if (!verifyUtils.isEmail(sendEmail)) {
+			throw new BizError(t('notEmail'));
+		}
+
+		const accountRow = await accountService.selectByEmailIncludeDel(c, sendEmail);
+
+		if (!accountRow || accountRow.isDel === isDel.DELETE) {
+			throw new BizError(t('senderAccountNotExist'));
+		}
+
+		if (accountRow.userId !== adminUser.userId) {
+			throw new BizError(t('sendEmailNotCurUser'));
+		}
+
+		return await emailService.send(c, {
+			accountId: accountRow.accountId,
+			name: typeof sendName === 'string' ? sendName.trim() : '',
+			sendType,
+			emailId,
+			receiveEmail,
+			subject: typeof subject === 'string' ? subject : '',
+			content: typeof content === 'string' ? content : '',
+			text: typeof text === 'string' ? text : '',
+			attachments: this.normalizeAttachments(attachments)
+		}, adminUser.userId);
+	},
+
 	async genToken(c, params) {
 
 		await this.verifyUser(c, params)
@@ -188,6 +250,107 @@ const publicService = {
 		if (!await cryptoUtils.verifyPassword(password, userRow.salt, userRow.password)) {
 			throw new BizError(t('IncorrectPwd'));
 		}
+	},
+
+	normalizeReceiveEmail(receiveEmail) {
+		if (Array.isArray(receiveEmail)) {
+			return [...new Set(receiveEmail
+				.map(item => typeof item === 'string' ? item.trim() : '')
+				.filter(Boolean))];
+		}
+
+		if (typeof receiveEmail === 'string') {
+			return [...new Set(receiveEmail
+				.split(/[,，;；\n\r]+/)
+				.map(item => item.trim())
+				.filter(Boolean))];
+		}
+
+		return [];
+	},
+
+	normalizeAttachments(attachments) {
+		if (!Array.isArray(attachments)) {
+			return [];
+		}
+
+		return attachments
+			.filter(item => item)
+			.map(item => {
+				const mimeType = item.type || item.contentType || item.mimeType || 'application/octet-stream';
+				return {
+					...item,
+					type: mimeType,
+					contentType: item.contentType || mimeType,
+					mimeType: item.mimeType || mimeType
+				};
+			});
+	},
+
+	normalizeEmailIds(params = {}) {
+		let { emailId, emailIds } = params;
+
+		const rawIds = [];
+
+		if (emailId || emailId === 0) {
+			rawIds.push(emailId);
+		}
+
+		if (Array.isArray(emailIds)) {
+			rawIds.push(...emailIds);
+		} else if (typeof emailIds === 'string') {
+			rawIds.push(...emailIds.split(/[,，]/));
+		} else if (emailIds || emailIds === 0) {
+			rawIds.push(emailIds);
+		}
+
+		return [...new Set(rawIds
+			.map(item => Number(item))
+			.filter(item => Number.isInteger(item) && item > 0))];
+	},
+
+	buildEmailConditions(params = {}, includeTimeRange = false) {
+		let { toEmail, content, subject, sendName, sendEmail, type, isDel, startTime, endTime } = params;
+
+		const conditions = [];
+
+		if (toEmail) {
+			conditions.push(sql`${email.toEmail} COLLATE NOCASE LIKE ${toEmail}`);
+		}
+
+		if (sendEmail) {
+			conditions.push(sql`${email.sendEmail} COLLATE NOCASE LIKE ${sendEmail}`);
+		}
+
+		if (sendName) {
+			conditions.push(sql`${email.name} COLLATE NOCASE LIKE ${sendName}`);
+		}
+
+		if (subject) {
+			conditions.push(sql`${email.subject} COLLATE NOCASE LIKE ${subject}`);
+		}
+
+		if (content) {
+			conditions.push(sql`${email.content} COLLATE NOCASE LIKE ${content}`);
+		}
+
+		if (type || type === 0) {
+			conditions.push(eq(email.type, Number(type)));
+		}
+
+		if (isDel || isDel === 0) {
+			conditions.push(eq(email.isDel, Number(isDel)));
+		}
+
+		if (includeTimeRange && startTime) {
+			conditions.push(gte(email.createTime, `${startTime}`));
+		}
+
+		if (includeTimeRange && endTime) {
+			conditions.push(lte(email.createTime, `${endTime}`));
+		}
+
+		return conditions;
 	}
 
 }
