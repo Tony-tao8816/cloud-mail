@@ -5,6 +5,7 @@ import accountService from '../src/service/account-service.js';
 import emailService from '../src/service/email-service.js';
 import BizError from '../src/error/biz-error.js';
 import app from '../src/hono/webs.js';
+import emailHtmlTemplate from '../src/template/email-html.js';
 
 describe('publicService.sendEmail', () => {
 	afterEach(() => {
@@ -180,5 +181,18 @@ describe('public route aliases', () => {
 		expect(listSpy).toHaveBeenCalledWith(expect.anything(), { accountId: '1', size: '20' }, 7);
 		expect(data.code).toBe(200);
 		expect(data.data).toEqual([{ accountId: 1, email: 'admin@example.com' }]);
+	});
+});
+
+describe('telegram email html template', () => {
+	it('renders html without embedding content into client-side script', () => {
+		const html = '<body style="font-size:16px"><p>code `inline` and ${value}</p></body>';
+		const result = emailHtmlTemplate(html, 'files.example.com');
+
+		expect(result).toContain('code `inline` and ${value}');
+		expect(result).toContain('font-size:16px');
+		expect(result).toContain('class="shadow-content"');
+		expect(result).not.toContain('const exampleHtml =');
+		expect(result).not.toContain('attachShadow');
 	});
 });
