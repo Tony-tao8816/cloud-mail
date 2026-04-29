@@ -192,10 +192,23 @@ describe('telegram email html template', () => {
 		const result = emailHtmlTemplate(html, 'files.example.com');
 
 		expect(result).toContain('code `inline` and ${value}');
+		expect(result).toContain('class="fallback-content"');
 		expect(result).toContain('attachShadow');
 		expect(result).toContain('renderHTML("\\u003cbody');
 		expect(result).not.toContain('const exampleHtml =');
 		expect(result).not.toContain('renderHTML(`<');
+	});
+
+	it('renders a visible fallback when mini app scripts do not run', () => {
+		const html = '<body><p>Fallback visible</p></body>';
+		const result = emailHtmlTemplate(html, 'files.example.com');
+
+		const scriptIndex = result.indexOf('<script>');
+		const fallbackIndex = result.indexOf('Fallback visible');
+
+		expect(fallbackIndex).toBeGreaterThan(-1);
+		expect(fallbackIndex).toBeLessThan(scriptIndex);
+		expect(result).toContain('display: block !important');
 	});
 
 	it('keeps hostile email body styles from hiding the mini app page', () => {
@@ -207,6 +220,7 @@ describe('telegram email html template', () => {
 		expect(result).toContain('sanitizeBodyStyle');
 		expect(result).toContain("const blockedProps = new Set");
 		expect(result).not.toContain('<style>body,.content-box');
+		expect(result.slice(0, result.indexOf('<script>'))).not.toContain('display:none; font-size');
 	});
 });
 

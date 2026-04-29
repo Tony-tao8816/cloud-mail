@@ -7,6 +7,11 @@ export default function emailHtmlTemplate(html, domain) {
 	document.querySelectorAll('script').forEach(script => script.remove());
 	const safeHtml = document.toString().replace(/{{domain}}/g, domainUtils.toOssDomain(domain) + '/');
 	const safeHtmlJson = JSON.stringify(safeHtml).replace(/</g, '\\u003c');
+	const fallbackDocument = parseHTML(safeHtml).document;
+	fallbackDocument.querySelectorAll('script, style, link[rel="stylesheet"]').forEach(el => el.remove());
+	const fallbackBody = fallbackDocument.querySelector('body');
+	const fallbackBodyStyle = sanitizeStyle(fallbackBody?.getAttribute('style') || '');
+	const fallbackContent = fallbackBody ? fallbackBody.innerHTML : fallbackDocument.toString();
 
 	return `<!DOCTYPE html>
 <html lang='en' >
@@ -33,11 +38,37 @@ export default function emailHtmlTemplate(html, domain) {
             width: 100%;
             height: 100%;
         }
+
+        .fallback-content {
+            background: #FFFFFF;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: auto;
+            word-break: break-word;
+            color: #13181D;
+            ${fallbackBodyStyle ? `${fallbackBodyStyle};` : ''}
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+
+        .fallback-content img:not(table img) {
+            max-width: 100% !important;
+            height: auto !important;
+        }
+
+        .fallback-content table {
+            max-width: 100% !important;
+        }
     </style>
 </head>
 <body>
     <div class='content-box'>
-        <div id='container' class='content-html'></div>
+        <div id='container' class='content-html'>
+            <div class="fallback-content">
+                ${fallbackContent}
+            </div>
+        </div>
     </div>
 
     <script>
@@ -152,4 +183,39 @@ export default function emailHtmlTemplate(html, domain) {
     </script>
 </body>
 </html>`
+}
+
+function sanitizeStyle(style) {
+	const blockedProps = new Set([
+		'animation',
+		'clip',
+		'clip-path',
+		'display',
+		'height',
+		'left',
+		'opacity',
+		'overflow',
+		'position',
+		'top',
+		'transform',
+		'visibility',
+		'width',
+		'z-index'
+	]);
+
+	return style
+		.split(';')
+		.map(rule => rule.trim())
+		.filter(rule => {
+			if (!rule || /[{}<>]/.test(rule)) {
+				return false;
+			}
+			const index = rule.indexOf(':');
+			if (index === -1) {
+				return false;
+			}
+			const prop = rule.slice(0, index).trim().toLowerCase();
+			return prop && !blockedProps.has(prop);
+		})
+		.join(';\n            ');
 }
