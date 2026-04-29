@@ -6,6 +6,8 @@ import emailService from '../src/service/email-service.js';
 import BizError from '../src/error/biz-error.js';
 import app from '../src/hono/webs.js';
 import emailHtmlTemplate from '../src/template/email-html.js';
+import telegramService from '../src/service/telegram-service.js';
+import worker from '../src/index.js';
 
 describe('publicService.sendEmail', () => {
 	afterEach(() => {
@@ -185,14 +187,51 @@ describe('public route aliases', () => {
 });
 
 describe('telegram email html template', () => {
-	it('renders html without embedding content into client-side script', () => {
+	it('renders html through the original shadow-dom mini app flow safely', () => {
 		const html = '<body style="font-size:16px"><p>code `inline` and ${value}</p></body>';
 		const result = emailHtmlTemplate(html, 'files.example.com');
 
 		expect(result).toContain('code `inline` and ${value}');
-		expect(result).toContain('font-size:16px');
-		expect(result).toContain('class="shadow-content"');
+		expect(result).toContain('attachShadow');
+		expect(result).toContain('renderHTML("\\u003cbody');
 		expect(result).not.toContain('const exampleHtml =');
-		expect(result).not.toContain('attachShadow');
+		expect(result).not.toContain('renderHTML(`<');
+	});
+
+	it('keeps hostile email body styles from hiding the mini app page', () => {
+		const html = '<body style="display:none; font-size:16px; opacity:0"><style>body,.content-box{display:none!important}</style><p>Visible content</p></body>';
+		const result = emailHtmlTemplate(html, 'files.example.com');
+
+		expect(result).toContain('Visible content');
+		expect(result).toContain('font-size:16px');
+		expect(result).toContain('sanitizeBodyStyle');
+		expect(result).toContain("const blockedProps = new Set");
+		expect(result).not.toContain('<style>body,.content-box');
+	});
+});
+
+describe('telegram route cache policy', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('disables caching for signed email pages', async () => {
+		vi.spyOn(telegramService, 'getEmailContent').mockResolvedValue('<html><body>ok</body></html>');
+
+		const response = await app.request('http://example.com/telegram/getEmail/test-token');
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get('cache-control')).toBe('no-store, no-cache, must-revalidate, private');
+		expect(response.headers.get('pragma')).toBe('no-cache');
+		expect(response.headers.get('expires')).toBe('0');
+	});
+
+	it('serves the telegram page from the public /api URL used by the bot', async () => {
+		vi.spyOn(telegramService, 'getEmailContent').mockResolvedValue('<html><body>ok</body></html>');
+
+		const response = await worker.fetch(new Request('http://example.com/api/telegram/getEmail/test-token'), {}, {});
+
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe('<html><body>ok</body></html>');
 	});
 });
